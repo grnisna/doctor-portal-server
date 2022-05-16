@@ -2,8 +2,10 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 require('dotenv').config();
+const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-var jwt = require('jsonwebtoken');
+const verify = require('jsonwebtoken/verify');
+
 const port = process.env.PORT || 5000;
 
 // milldle ware 
@@ -15,6 +17,24 @@ app.use(express.json());
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.kemvm.mongodb.net/myFirstDatabase?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
+// -----------------secure user access by token ----------------
+const varifyJWT = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+        return res.status(401).send({ message: 'unAuthorized ' })
+    }
+
+    const token = authHeader.split(' ')[1];
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, function (err, decoded) {
+        if (err) {
+            return res.status(403).send({ message: 'Forbidden' })
+        }
+
+        req.decoded = decoded;
+        next();
+    })
+}
+
 
 async function run() {
 
@@ -22,7 +42,9 @@ async function run() {
         await client.connect();
         const serviceCollection = client.db("doctor_portal").collection("service");
         const bookingCollection = client.db("doctor_portal").collection("booking");
+        const userCollection = client.db("doctor_portal").collection("users");
 
+        // --------get all services from mongodeb and send client ------ 
         app.get('/service', async (req, res) => {
             const query = {};
             const cursor = serviceCollection.find(query);
@@ -31,6 +53,7 @@ async function run() {
             res.send(services);
         });
 
+        // --------- date onujayi data ke update kora --------- 
         app.get('/available', async (req, res) => {
             const date = req.query.date;
             const services = await serviceCollection.find().toArray();
@@ -47,13 +70,66 @@ async function run() {
             res.send(services);
         });
 
-        app.get('/booking', async (req, res) => {
-            const patient = req.query.patient;  
-            console.log(patient);          
-            const query = { patient:patient };
-            const bookings = await bookingCollection.find(query).toArray();
-            res.send(bookings);
+        // --------- user ke maintain kora  sathe token send kora-------------- /
+        app.put('/user/:email', async (req, res) => {
+            const email = req.params.email;
+            const user = req.body;
+            const filter = { email: email };
+            const options = { upsert: true };
+            const updateDoc = { $set: user };
+            const result = await userCollection.updateOne(filter, updateDoc, options);
+            const token = jwt.sign({ email: email }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1d' });
+
+            res.send({ result, token });
+        });
+
+        // -------------- make role in admin ---------- 
+        app.put('/user/admin/:email',varifyJWT,async(req,res)=>{
+            const email = req.params.email;
+            const requester = req.decoded.email;
+            const requesterAccount = await userCollection.findOne({email:requester});
+            if(requesterAccount.role === 'admin'){
+                const filter ={email:email};
+                const updateDoc ={ $set:{role:'admin'}};
+                const result = await userCollection.updateOne(filter,updateDoc);
+                return res.send(result);
+            }
+            else{
+                return res.status(403).send({message:'forbidden'});
+            }
+        });
+
+        // -------------------- check admin ====------------------ 
+        app.get('/admin/:email', async(req,res)=>{
+            const email = req.params.email;
+            const user = await userCollection.findOne({email:email});
+            const isAdmin = user.role === 'admin';
+            res.send({admin:isAdmin});
+        
         })
+
+        // ============== get user from mongoDB for admin ========= 
+        app.get('/user', varifyJWT, async(req,res)=>{
+            const users = await userCollection.find().toArray();
+            res.send(users);
+        })
+
+        // --------- conditional kichu data mongodb theke niye UI te show korano -----  
+
+        app.get('/booking', varifyJWT, async (req, res) => {
+            const patient = req.query.patient;
+            const query = { patient: patient };
+            const decodedEmail = req.decoded.email;
+            if (patient === decodedEmail) {
+                const bookings = await bookingCollection.find(query).toArray();
+                return res.send(bookings);
+            }
+            else{
+                return res.status(403).send({message:'forbidden'})
+            }
+        });
+
+        // --------UI theke data mongoDb te send kora -------- 
 
         app.post('/booking', async (req, res) => {
             const booking = req.body;
@@ -65,101 +141,8 @@ async function run() {
 
             const result = await bookingCollection.insertOne(booking);
             return res.send({ success: true, result });
-        })
+        });
 
-
-        // ------------------- get booking slot------------        
-        // app.get('/engage', async(req,res)=>{
-        //     const bookDate = req.query.bookDate;
-        //     // step 1    get all service data from mongodb example: [{},{},{},{},{},{},{},{},{},{},]
-        //     const allService = await serviceCollection.find().toArray();
-
-        //     // step 2    get only > all booking data from mongodb              
-        //     const query = {date : bookDate};
-        //     const allBook = await bookingCollection.find(query).toArray();
-
-        //     // step 3 
-        //     // ekti object theke only ekti property ber kore niye asar jonno forEach loop
-        //     allService.forEach(singleService =>{
-        //         // step 4 
-        //         // jegulo booking deoya hoice sudhumatro sei array of object guloexample: [{},{},{},]
-        //         const bookingServices = allBook.filter(book => book.bookingName === singleService.name);
-
-        //         // step 5 
-        //         // bookingServices er moddhe slot namee string/je time gulo ache jetake ber korte hobe
-        //         const bookingSlots = bookingServices.map(serviceBook => serviceBook.slot);
-
-        //         // step 6 
-        //         // bookingSlots er moddhe jei slot gulo nai jegulo select kora
-        //         const available  = singleService.slots.filter(slot => !bookingSlots.includes(slot));
-
-        //         singleService.slots = available;
-        //     });
-
-        //     res.send(allService);
-
-        // });   
-
-        // app.get('/someting', async(req,res)=>{
-        //     const patientEmail  = req.query.patientEmail;
-
-        //     const query = {patientEmail:patientEmail};
-        //     const result = await bookingCollection.find(query).toArray();
-        //     res.send(result);
-        // })
-
-        // app.get('/booking', async(req, res) =>{
-        //     const patientEmail = req.query.patientEmail;
-        //     const query = {patientEmail: patientEmail};
-        //     const bookings = await bookingCollection.find(query).toArray();
-        //     res.send(bookings);
-        //   })
-        // ------------------------------------------------------------
-        // app.get('/engage', async(req, res) =>{
-        //     const date = req.query.bookDate;
-
-        //     // step 1:  get all services
-        //     const services = await serviceCollection.find().toArray();
-
-        //     // step 2: get the booking of that day. output: [{}, {}, {}, {}, {}, {}]
-        //     const query = {date:date};
-        //     const bookings = await bookingCollection.find(query).toArray();
-
-        //     // step 3: for each service
-        //     services.forEach(service=>{
-        //       // step 4: find bookings for that service. output: [{}, {}, {}, {}]
-        //       const serviceBookings = bookings.filter(book => book.bookingName === service.name);
-        //       // step 5: select slots for the service Bookings: ['', '', '', '']
-        //       const bookedSlots = serviceBookings.map(book => book.slot);
-        //       // step 6: select those slots that are not in bookedSlots
-        //       const available = service.slots.filter(slot => !bookedSlots.includes(slot));
-        //       //step 7: set available to slots to make it easier 
-        //       service.slots = available;
-        //     });
-
-
-        //     res.send(services);
-        //   })
-        // -----------------------------------------------------------
-
-
-        // add booking from UI to mongoDB
-        // app.post('/engage', async (req, res) => {
-        //     const engaged = req.body;
-        //     const query = {
-        //                 bookingName: engaged.bookingName,
-        //                 bookDate: engaged.bookDate,
-        //                 patientName: engaged.patientName,
-        //                 patientEmail: engaged.patientEmail,
-        //             };
-
-        //     const exists = await bookingCollection.findOne(query);
-        //     if (exists) {
-        //         return res.send({ success: false, engaged: exists });
-        //     }
-        //     const result = await bookingCollection.insertOne(engaged);
-        //     res.send({success:true,result});
-        // });
 
     }
     finally {
