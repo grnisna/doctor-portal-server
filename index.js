@@ -2,10 +2,13 @@ const express = require('express');
 const cors = require('cors');
 const app = express();
 require('dotenv').config();
+
 const nodemailer = require("nodemailer");
 const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const verify = require('jsonwebtoken/verify');
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
 
 const port = process.env.PORT || 5000;
 
@@ -23,6 +26,8 @@ var transporter = nodemailer.createTransport({
     }
   });
 
+
+//   send booking appointment email---------------------------- 
 const sendAppointmentEmail = booking =>{
     const {patient,patientName,date,slot,treatement} = booking;
     var mailOptions = {
@@ -47,6 +52,32 @@ const sendAppointmentEmail = booking =>{
         }
       });
 }
+//   send comfirm payment for appointment email---------------------------- 
+// const sendPaymentEmail = email =>{
+//     // const {patient,patientName,date,slot,treatement} = booking;
+//     var mailOptions = {
+//         from: 'mdnisanahmed63@gmail.com',
+//         to: email,
+//         subject: `Payment confirm for  o`,
+//         text: `Confirm your stripe payment `,
+//         html:`<div>
+//             <h2>Hello ,</h2>
+//             <h4>We received your appointment payment for  </h4> 
+//             <p>
+//             Please come before 30 minutes in our place. 
+//             </p>
+//             <h2>Thank you so much </h2>
+//         </div>`
+//       };
+      
+//       transporter.sendMail(mailOptions, function(error, info){
+//         if (error) {
+//           console.log(error);
+//         } else {
+//           console.log('Email sent: ' + info.response);
+//         }
+//       });
+// }
 
   
 
@@ -85,6 +116,7 @@ async function run() {
         const bookingCollection = client.db("doctor_portal").collection("booking");
         const userCollection = client.db("doctor_portal").collection("users");
         const doctorCollection = client.db('doctor_portal').collection('doctors');
+        const paymentCollection = client.db('doctor_portal').collection('payments');
 
         // ----------------verify admin ----------------------------
         const verifyAdmin = async (req, res, next) => {
@@ -223,6 +255,49 @@ async function run() {
             const query = {_id:ObjectId(id)};
             const result = await bookingCollection.findOne(query);
             res.send(result);
+        });
+
+        //--------------------payment of stripe -------------------------
+        app.post('/create-payment-intent',varifyJWT,async(req,res)=>{
+            const service = req.body;
+            const price = service.price;
+            const amount = price*100;
+            // const paymentIntent = await stripe.paymentIntents.create({
+            //     amount: calculateOrderAmount(items),
+            //     currency: "eur",
+            //     automatic_payment_methods: {
+            //       enabled: true,
+            //     },
+            //   });
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount:amount,
+                currency:'usd',
+                payment_method_types:['card'],
+            });
+
+            res.send({clientSecret: paymentIntent.client_secret})
+        });
+
+        //---------- update booking and insert payment to paymentColleection ----------
+        app.patch('/booking/:id',varifyJWT,async(req,res)=>{
+            const email = req.query.email;
+            const id = req.params.id;
+            const booking= req.body;
+            const payment = req.body;
+            const filter = {_id:ObjectId(id)};
+            const updateDoc = {
+                $set:{
+                    paid:true,
+                    transactionId:payment.transactionId,
+
+                }
+            };
+            
+            const resutl = await paymentCollection.insertOne(payment);
+            const updatedBooking = await bookingCollection.updateOne(filter,updateDoc);
+            // sendPaymentEmail(email);
+
+            res.send(updateDoc);
         })
 
 
